@@ -1,0 +1,152 @@
+---
+title: "My Shiny App"
+output: flexdashboard::flex_dashboard
+runtime: shiny
+---
+
+Load the necessary libraries
+```{r}
+library(shiny)
+library(shinydashboard)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(plotly)
+library(leaflet)
+library(DT)
+
+ui <- fluidPage(
+  titlePanel("Global Child Mortality Dashboard (UNICEF Data)"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      fileInput("file", "Upload Excel File", accept = c(".xlsx")),
+      actionButton("process", "Process Data"),
+      hr(),
+      conditionalPanel(
+        condition = "input.main_tabs != 'rank_table'",
+        selectInput("country", "Select Country", choices = NULL, selected = NULL),
+        strong(" SDG Region:"), textOutput("selected_sdg_region"),
+        strong(" UNICEF Region:"), textOutput("selected_unicef_region")
+      )
+    ),
+    
+    mainPanel(
+      tabsetPanel(id = "main_tabs",
+        tabPanel("Country Trend", plotlyOutput("trend_chart")),
+        tabPanel("Global Mortality Map", leafletOutput("mortality_map")),
+        tabPanel("Country Ranking", plotlyOutput("ranking_plot")),
+        tabPanel("Rank Table",
+                 selectInput("rank_year", "Select Year", choices = NULL),
+                 DTOutput("rank_table")
+        )
+      )
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  df <- reactiveVal(NULL)
+  
+  observeEvent(input$process, {
+    req(input$file)
+    data <- read_xlsx(input$file$datapath)
+    
+    # Data Cleaning
+    data <- data %>% slice(1:615) %>% filter(row_number() > 13)
+    colnames(data) <- data[1, ]
+    data <- data[-1, ]
+    data <- data[, colSums(is.na(data)) < (0.5 * nrow(data))] %>% na.omit()
+    
+    # Transform Data
+    data <- data %>%
+      select(ISO.Code, Country.Name, SDG.Region, UNICEF.Region, everything()) %>%
+      pivot_longer(cols = matches("^[0-9]{4}\\.5$"), names_to = "Year", values_to = "Value") %>%
+      mutate(Year = as.numeric(gsub("\\.5", "", Year)), Value = as.numeric(Value))
+    
+    # Generate Random Coordinates for Mapping
+    country_coords <- data.frame(
+      ISO.Code = unique(data$ISO.Code),
+      lat = runif(length(unique(data$ISO.Code)), -50, 50),
+      lon = runif(length(unique(data$ISO.Code)), -100, 100)
+    )
+    
+    data <- data %>% left_join(country_coords, by = "ISO.Code")
+    
+    df(data)
+    
+    # Update UI Inputs
+    updateSelectInput(session, "country", choices = unique(data$Country.Name), selected = "Australia")
+    updateSelectInput(session, "rank_year", choices = unique(data$Year), selected = max(data$Year))
+    
+    showNotification("Data processing complete!", type = "message", id = "process_notif")
+  })
+  
+  output$selected_sdg_region <- renderText({ 
+    req(df()) 
+    unique(df()$SDG.Region[df()$Country.Name == input$country]) 
+  })
+  
+  output$selected_unicef_region <- renderText({ 
+    req(df()) 
+    unique(df()$UNICEF.Region[df()$Country.Name == input$country]) 
+  })
+  
+  output$trend_chart <- renderPlotly({
+    req(df())
+    ggplotly(
+      ggplot(df() %>% filter(Country.Name == input$country), aes(x = Year, y = Value)) +
+        geom_line(color = "blue") +
+        geom_point() +
+        theme_minimal() +
+        labs(title = paste("Trend for", input$country))
+    )
+  })
+  
+  output$mortality_map <- renderLeaflet({
+    req(df())
+    map_data <- df() %>% filter(Year == max(df()$Year))
+    pal <- colorBin(c("green", "yellow", "orange", "red"), domain = map_data$Value, bins = c(0, 20, 50, 100, Inf))
+    
+    leaflet(map_data) %>% addTiles() %>%
+      addCircles(lng = ~lon, lat = ~lat, color = ~pal(Value), fillOpacity = 0.8, radius = ~Value * 1000, 
+                 popup = ~paste0("<b>", Country.Name, "</b><br>U5MR: ", Value)) %>%
+      addLegend("bottomright", pal = pal, values = map_data$Value, title = "U5MR")
+  })
+  
+  output$ranking_plot <- renderPlotly({
+  req(df())
+  
+  ranked_data <- df() %>%
+    filter(Year >= min(df()$Year), Year <= max(df()$Year)) %>%
+    group_by(Year) %>%
+    arrange(Year, Value) %>%
+    mutate(Rank = row_number()) %>%
+    ungroup()
+
+  p <- ggplot(ranked_data %>% filter(Country.Name == input$country),
+              aes(x = Year, y = Rank, group = Country.Name)) +
+    geom_line(color = "purple") +
+    geom_point() +
+    scale_y_reverse() +  # Ensure rank 1 is at the top
+    theme_minimal() +
+    labs(title = paste("📊 Child Mortality Rank of", input$country, "Over Time"),
+         x = "Year", y = "Rank (Lower is Better)")
+
+  ggplotly(p)
+})
+
+  
+  output$rank_table <- renderDT({
+    req(df())
+    rank_table_data <- df() %>% filter(Year == input$rank_year) %>%
+      arrange(Value) %>% mutate(Rank = row_number()) %>% select(Rank, Country.Name, Value)
+    
+    datatable(rank_table_data, options = list(pageLength = 10), rownames = FALSE)
+  })
+}
+# Run App
+shinyApp(ui, server)
+```
+
