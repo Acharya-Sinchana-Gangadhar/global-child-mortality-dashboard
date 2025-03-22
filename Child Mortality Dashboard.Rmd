@@ -1,0 +1,156 @@
+---
+title: "My Shiny App"
+output: flexdashboard::flex_dashboard
+runtime: shiny
+---
+
+Load the necessary libraries
+```{r}
+library(shiny)
+library(shinydashboard)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(plotly)
+library(DT)
+
+ui <- fluidPage(
+  titlePanel("Global Child Mortality Dashboard (UNICEF Data)"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      fileInput("file", "Upload Excel File", accept = c(".xlsx")),
+      actionButton("process", "Process Data"),
+      hr(),
+      selectInput("country", "Select Country", choices = NULL, selected = NULL),
+      selectInput("boundary", "Select Uncertainty Bound", choices = NULL, selected = NULL),
+      strong("SDG Region:"), textOutput("selected_sdg_region"),
+      strong("UNICEF Region:"), textOutput("selected_unicef_region")
+    ),
+    
+    mainPanel(
+      tabsetPanel(id = "main_tabs",
+                  tabPanel("Country Trend", plotlyOutput("trend_chart")),
+                  tabPanel("Country Ranking", plotlyOutput("ranking_plot")),
+                  tabPanel("Rank Table",
+                           selectInput("rank_year", "Select Year", choices = NULL),
+                           DTOutput("rank_table")
+                  )
+      )
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  df <- reactiveVal(NULL)
+  
+  observeEvent(input$process, {
+    req(input$file)
+    data <- read_xlsx(input$file$datapath)
+    
+    # Data Cleaning
+    data <- data %>% slice(1:615) %>% filter(row_number() > 13)
+    colnames(data) <- data[1, ]
+    data <- data[-1, ]
+    data <- data[, colSums(is.na(data)) < (0.5 * nrow(data))] %>% na.omit()
+    
+    # Transform Data
+    data <- data %>%
+      select(ISO.Code, Country.Name, SDG.Region, UNICEF.Region, `Uncertainty.Bounds*`, everything()) %>%
+      pivot_longer(cols = matches("^[0-9]{4}\\.5$"), names_to = "Year", values_to = "Value") %>%
+      mutate(Year = as.numeric(gsub("\\.5", "", Year)), Value = as.numeric(Value))
+    
+    df(data)
+    
+    # Update Country and Year Selection
+    updateSelectInput(session, "country", choices = unique(data$Country.Name), selected = "Australia")
+    updateSelectInput(session, "rank_year", choices = unique(data$Year), selected = max(data$Year))
+    
+    showNotification("Data processing complete!", type = "message", id = "process_notif")
+  })
+  
+  # Update Uncertainty Bound Dropdown based on Selected Country
+  observeEvent(input$country, {
+    req(df(), input$country)
+    available_bounds <- unique(df()$`Uncertainty.Bounds*`[df()$Country.Name == input$country])
+    updateSelectInput(session, "boundary", choices = available_bounds, selected = available_bounds[1])
+  })
+  
+  output$selected_sdg_region <- renderText({ 
+    req(df(), input$country)
+    unique(df()$SDG.Region[df()$Country.Name == input$country]) 
+  })
+  
+  output$selected_unicef_region <- renderText({ 
+    req(df(), input$country)
+    unique(df()$UNICEF.Region[df()$Country.Name == input$country]) 
+  })
+  
+  # 📈 TREND PLOT: Updates dynamically based on selected boundary
+  output$trend_chart <- renderPlotly({
+    req(df(), input$country, input$boundary)
+    
+    country_data <- df() %>% filter(Country.Name == input$country, `Uncertainty.Bounds*` == input$boundary)
+    
+    p <- ggplot(country_data, aes(x = Year, y = Value, color = input$boundary)) +
+      geom_line(linewidth = 1) +
+      geom_point(size = 2) +
+      scale_color_manual(values = c("Lower" = "red", "Median" = "blue", "Upper" = "green")) +
+      theme_minimal() +
+      labs(title = paste("Child Mortality Trend for", input$country),
+           y = "Child Mortality Rate",
+           color = "Uncertainty Bound")
+    
+    ggplotly(p)
+  })
+  
+  # 📉 RANKING PLOT: Shows rank of selected country over time for the selected boundary
+  output$ranking_plot <- renderPlotly({
+    req(df(), input$country, input$boundary)
+    
+    rank_data <- df() %>%
+      filter(`Uncertainty.Bounds*` == input$boundary) %>%
+      group_by(Year) %>%
+      arrange(Value) %>%
+      mutate(Rank = row_number()) %>%
+      ungroup() %>%
+      filter(Country.Name == input$country)
+    
+    p <- ggplot(rank_data, aes(x = Year, y = Rank, color = input$boundary)) +
+      geom_line(linewidth = 1) +
+      geom_point(size = 2) +
+      scale_y_reverse() +  # Ensure rank 1 is at the top
+      scale_color_manual(values = c("Lower" = "red", "Median" = "blue", "Upper" = "green")) +
+      theme_minimal() +
+      labs(title = paste("Rank Trend of", input$country, "Over Time"),
+           x = "Year", y = "Rank",
+           color = "Uncertainty Bound")
+    
+    ggplotly(p)
+  })
+  
+  # 📊 RANK TABLE: Shows rank, country, boundary, and value
+  output$rank_table <- renderDT({
+    req(df(), input$rank_year)
+    
+    rank_table_data <- df() %>%
+      filter(Year == input$rank_year) %>%
+      group_by(`Uncertainty.Bounds*`) %>%
+      arrange(Value) %>%
+      mutate(Rank = row_number()) %>%
+      ungroup() %>%
+      select(Rank, Country.Name, `Uncertainty.Bounds*`, Value)
+    
+    datatable(rank_table_data, options = list(pageLength = 10), rownames = FALSE)
+  })
+}
+
+# Run App
+shinyApp(ui, server)
+
+```
+
+
+
+
