@@ -87,7 +87,7 @@ server <- function(input, output, session) {
     unique(df()$UNICEF.Region[df()$Country.Name == input$country]) 
   })
   
-  # 📈 TREND PLOT: Updates dynamically based on selected boundary
+  #  TREND PLOT: Updates dynamically based on selected boundary
   output$trend_chart <- renderPlotly({
     req(df(), input$country, input$boundary)
     
@@ -105,7 +105,7 @@ server <- function(input, output, session) {
     ggplotly(p)
   })
   
-  # 📉 RANKING PLOT: Shows rank of selected country over time for the selected boundary
+  #  RANKING PLOT: Shows rank of selected country over time for the selected boundary
   output$ranking_plot <- renderPlotly({
     req(df(), input$country, input$boundary)
     
@@ -130,7 +130,7 @@ server <- function(input, output, session) {
     ggplotly(p)
   })
   
-  # 📊 RANK TABLE: Shows rank, country, boundary, and value
+  #  RANK TABLE: Shows rank, country, boundary, and value
   output$rank_table <- renderDT({
     req(df(), input$rank_year)
     
